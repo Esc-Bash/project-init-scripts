@@ -2,16 +2,16 @@
 set -euo pipefail
 
 RAW_PROJECT_DIR="${1:-.}"
-
-if [[ "${RAW_PROJECT_DIR}" == *".."* ]]; then
-  echo "Error: project directory must not include '..' path traversal segments." >&2
-  exit 1
-fi
-
 PROJECT_DIR="$(realpath -m "${RAW_PROJECT_DIR}")"
 
 if [[ "${PROJECT_DIR}" == "/" ]]; then
   echo "Error: refusing to initialize in the filesystem root directory." >&2
+  exit 1
+fi
+
+PARENT_DIR="$(dirname "${PROJECT_DIR}")"
+if [[ ! -d "${PARENT_DIR}" ]]; then
+  echo "Error: parent directory does not exist: ${PARENT_DIR}" >&2
   exit 1
 fi
 
