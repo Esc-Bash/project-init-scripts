@@ -2,7 +2,10 @@
 set -euo pipefail
 
 RAW_PROJECT_DIR="${1:-.}"
-PROJECT_DIR="$(realpath -m "${RAW_PROJECT_DIR}")"
+if ! PROJECT_DIR="$(realpath -m "${RAW_PROJECT_DIR}")"; then
+  echo "Error: unable to resolve project directory path: ${RAW_PROJECT_DIR}" >&2
+  exit 1
+fi
 
 if [[ "${PROJECT_DIR}" == "/" ]]; then
   echo "Error: refusing to initialize in the filesystem root directory." >&2
@@ -15,7 +18,10 @@ if [[ ! -d "${PARENT_DIR}" ]]; then
   exit 1
 fi
 
-mkdir -p "${PROJECT_DIR}/bin" "${PROJECT_DIR}/lib" "${PROJECT_DIR}/tests"
+if ! mkdir -p "${PROJECT_DIR}/bin" "${PROJECT_DIR}/lib" "${PROJECT_DIR}/tests"; then
+  echo "Error: failed to create project directories in ${PROJECT_DIR}" >&2
+  exit 1
+fi
 
 if [[ ! -f "${PROJECT_DIR}/README.md" ]]; then
   cat > "${PROJECT_DIR}/README.md" <<'README'
