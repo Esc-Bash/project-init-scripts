@@ -1,7 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT_DIR="${1:-.}"
+RAW_PROJECT_DIR="${1:-.}"
+
+if [[ "${RAW_PROJECT_DIR}" == *".."* ]]; then
+  echo "Error: project directory must not include '..' path traversal segments." >&2
+  exit 1
+fi
+
+PROJECT_DIR="$(realpath -m "${RAW_PROJECT_DIR}")"
+
+if [[ "${PROJECT_DIR}" == "/" ]]; then
+  echo "Error: refusing to initialize in the filesystem root directory." >&2
+  exit 1
+fi
 
 mkdir -p "${PROJECT_DIR}/bin" "${PROJECT_DIR}/lib" "${PROJECT_DIR}/tests"
 
