@@ -10,8 +10,9 @@
 #   2. waits for the kind node
 #   3. installs Argo CD v3.5.3 and shows the resource tree growing
 #   4. installs the argocd command line tool
-#   5. starts the port-forward on 8080 as a background service (unit argocd-ui)
-#   6. logs the command line tool in as admin
+#   5. exposes the server on a NodePort for the CLI and starts the port-forward
+#      on 8080 for the lab browser as a background service (unit argocd-ui)
+#   6. logs the command line tool in as admin through the NodePort
 #   7. configures git, forks argoproj/argocd-example-apps, clones it, pushes TOPIC_BRANCH
 #   8. registers the fork with Argo CD
 # Safe to run again: every step checks before it acts. Output goes to the
@@ -244,9 +245,31 @@ while :; do
   sleep 2
 done
 printf '\n'
+NODE_IP=""
 if [[ "$DRY_RUN" != "1" ]]; then
   run kubectl -n argocd rollout status deploy argocd-server --timeout=120s
   run kubectl -n argocd rollout status sts argocd-application-controller --timeout=120s
+  # The CLI talks to the server through a NodePort on the kind node. Unlike a
+  # port-forward, nothing has to stay running for it to work.
+  run kubectl -n argocd patch svc argocd-server --type merge -p '{"spec":{"type":"NodePort","ports":[{"name":"http","port":80,"targetPort":8080,"nodePort":30080},{"name":"https","port":443,"targetPort":8080,"nodePort":30443}]}}'
+  NODE_IP="$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>>"$LOG")"
+  [[ -n "$NODE_IP" ]] || die "could not read the kind node address"
+  SERVER_MODE=""
+  for _ in $(seq 1 45); do
+    if curl -s --max-time 2 "http://${NODE_IP}:30080/api/version" 2>/dev/null | grep -q Version; then SERVER_MODE="http"; break; fi
+    if curl -sk --max-time 2 "https://${NODE_IP}:30080/api/version" 2>/dev/null | grep -q Version; then SERVER_MODE="tls"; break; fi
+    sleep 2
+  done
+  if [[ "$SERVER_MODE" == "tls" ]]; then
+    log "server still answers TLS, restarting argocd-server so it reads server.insecure"
+    run kubectl -n argocd rollout restart deploy argocd-server
+    run kubectl -n argocd rollout status deploy argocd-server --timeout=180s
+    for _ in $(seq 1 45); do
+      if curl -s --max-time 2 "http://${NODE_IP}:30080/api/version" 2>/dev/null | grep -q Version; then SERVER_MODE="http"; break; fi
+      sleep 2
+    done
+  fi
+  [[ "$SERVER_MODE" == "http" ]] || die "argocd-server does not answer plain HTTP on ${NODE_IP}:30080. Check: kubectl -n argocd logs deploy/argocd-server"
 fi
 ok "Argo CD ${ARGOCD_VERSION} running, all ${#WORKLOADS[@]} workloads healthy ($(elapsed))"
 
@@ -263,30 +286,21 @@ ok "argocd command line tool ${ARGOCD_VERSION}"
 # 5. port-forward ------------------------------------------------------------
 STEP="port-forward on 8080"
 if [[ "$DRY_RUN" != "1" ]]; then
+  # The lab browser reaches the UI through port 8080 on this machine. A
+  # port-forward dies when its pod goes away, so it runs in a restart loop.
   if ! systemctl is-active --quiet argocd-ui; then
-    run systemd-run --collect --unit=argocd-ui --property=Restart=on-failure --property=RestartSec=2 \
+    run systemd-run --collect --unit=argocd-ui --property=Restart=always --property=RestartSec=2 \
       --setenv=KUBECONFIG=/root/.kube/config \
       kubectl -n argocd port-forward svc/argocd-server --address 0.0.0.0 8080:80
   fi
-  SERVER_MODE=""
+  PF_OK=0
   for _ in $(seq 1 45); do
-    if curl -s --max-time 2 http://127.0.0.1:8080/api/version 2>/dev/null | grep -q Version; then SERVER_MODE="http"; break; fi
-    if curl -sk --max-time 2 https://127.0.0.1:8080/api/version 2>/dev/null | grep -q Version; then SERVER_MODE="tls"; break; fi
+    if curl -s --max-time 2 http://127.0.0.1:8080/api/version 2>/dev/null | grep -q Version; then PF_OK=1; break; fi
     sleep 2
   done
-  if [[ "$SERVER_MODE" == "tls" ]]; then
-    # server.insecure did not take effect yet: restart the server once more and wait for plain HTTP
-    log "server still answers TLS, restarting argocd-server so it reads server.insecure"
-    run kubectl -n argocd rollout restart deploy argocd-server
-    run kubectl -n argocd rollout status deploy argocd-server --timeout=180s
-    for _ in $(seq 1 45); do
-      if curl -s --max-time 2 http://127.0.0.1:8080/api/version 2>/dev/null | grep -q Version; then SERVER_MODE="http"; break; fi
-      sleep 2
-    done
-  fi
-  [[ "$SERVER_MODE" == "http" ]] || die "port 8080 does not answer with plain HTTP. Check: systemctl status argocd-ui   and   kubectl -n argocd logs deploy/argocd-server"
+  (( PF_OK == 1 )) || die "port 8080 does not answer. Check: systemctl status argocd-ui"
 fi
-ok "port-forward on 8080 (background service argocd-ui), server answers plain HTTP"
+ok "port-forward on 8080 for the lab browser (background service argocd-ui)"
 
 # 6. login -------------------------------------------------------------------
 STEP="argocd login"
@@ -299,21 +313,22 @@ if [[ "$DRY_RUN" != "1" ]]; then
     sleep 3
   done
   [[ -n "$ADMIN_PW" ]] || die "the initial admin password is not available yet. Check: kubectl -n argocd get secret argocd-initial-admin-secret"
+  ARGOCD_ADDR="${NODE_IP}:30080"
   for _ in $(seq 1 15); do
     for flags in "--plaintext" "--plaintext --grpc-web"; do
-      log "argocd login 127.0.0.1:8080 $flags"
+      log "argocd login ${ARGOCD_ADDR} $flags"
       # shellcheck disable=SC2086
-      if argocd login 127.0.0.1:8080 $flags --username admin --password "$ADMIN_PW" >>"$LOG" 2>&1; then
+      if argocd login "$ARGOCD_ADDR" $flags --username admin --password "$ADMIN_PW" >>"$LOG" 2>&1; then
         LOGGED_IN=1; break 2
       fi
     done
     sleep 3
   done
-  (( LOGGED_IN == 1 )) || die "could not log in to Argo CD as admin"
+  (( LOGGED_IN == 1 )) || die "could not log in to Argo CD as admin at ${ARGOCD_ADDR}"
   # make later shells aware of the server even without a saved login context
-  grep -q 'ARGOCD_SERVER=' /root/.bashrc 2>/dev/null || printf '\nexport ARGOCD_SERVER=127.0.0.1:8080\nexport ARGOCD_OPTS="--plaintext"\n' >>/root/.bashrc
+  grep -q 'ARGOCD_SERVER=' /root/.bashrc 2>/dev/null || printf '\nexport ARGOCD_SERVER=%s\nexport ARGOCD_OPTS="--plaintext"\n' "$ARGOCD_ADDR" >>/root/.bashrc
 fi
-ok "logged in as admin"
+ok "logged in as admin (CLI talks to ${NODE_IP:-the kind node}:30080)"
 
 # 7. git ---------------------------------------------------------------------
 STEP="git and GitHub fork"
