@@ -79,13 +79,13 @@ WORKLOADS=(
   "Deployment argocd-notifications-controller"
 )
 NOTES=(
-  "repo-server is the pod that turns Helm charts and Kustomize folders into plain YAML"
-  "application-controller compares Git with the cluster. It is the only pod that changes anything"
-  "server is the front door. The UI and the argocd command line tool both talk to it"
-  "redis is a cache, so the controller and the server do not repeat the same work"
-  "dex connects Argo CD to single sign-on. This skill uses local accounts, so it stays idle"
-  "notifications-controller sends a message when an app changes state. Topic 10 uses it"
-  "Argo CD checks Git every three minutes by default. A refresh makes it check now"
+  "repo-server turns Helm charts and Kustomize folders into plain YAML"
+  "application-controller is the only pod that changes the cluster"
+  "server is the front door for the UI and the argocd command line tool"
+  "redis is a cache, so the other pods do not repeat work"
+  "dex does single sign-on. This skill uses local accounts, so it stays idle"
+  "notifications-controller sends a message when an app changes state"
+  "Argo CD checks Git every three minutes. A refresh makes it check now"
 )
 TREE_LINES=0
 
@@ -119,33 +119,38 @@ tree_rows() {
 }
 
 # Block letters, one per workload, in the order of WORKLOADS: E S C B A S H.
-# A letter is dim and hollow until its object exists, yellow and hollow while
-# it starts, green and solid once the workload is healthy.
+# Solid green once the workload is healthy, hollow yellow while it starts,
+# hollow dim until its object exists. 5 rows, 5 columns per letter.
 # shellcheck disable=SC2034  # read through a nameref in glyph_row
-GLYPH_E=("███████╗" "██╔════╝" "█████╗  " "██╔══╝  " "███████╗" "╚══════╝")
-# shellcheck disable=SC2034  # read through a nameref in glyph_row
-GLYPH_S=("███████╗" "██╔════╝" "███████╗" "╚════██║" "███████║" "╚══════╝")
-# shellcheck disable=SC2034  # read through a nameref in glyph_row
-GLYPH_C=(" ██████╗" "██╔════╝" "██║     " "██║     " "╚██████╗" " ╚═════╝")
-# shellcheck disable=SC2034  # read through a nameref in glyph_row
-GLYPH_B=("██████╗ " "██╔══██╗" "██████╔╝" "██╔══██╗" "██████╔╝" "╚═════╝ ")
-# shellcheck disable=SC2034  # read through a nameref in glyph_row
-GLYPH_A=(" █████╗ " "██╔══██╗" "███████║" "██╔══██║" "██║  ██║" "╚═╝  ╚═╝")
-# shellcheck disable=SC2034  # read through a nameref in glyph_row
-GLYPH_H=("██╗  ██╗" "██║  ██║" "███████║" "██╔══██║" "██║  ██║" "╚═╝  ╚═╝")
+GLYPH_E=("█████" "█    " "████ " "█    " "█████")
+# shellcheck disable=SC2034
+GLYPH_S=("█████" "█    " "█████" "    █" "█████")
+# shellcheck disable=SC2034
+GLYPH_C=("█████" "█    " "█    " "█    " "█████")
+# shellcheck disable=SC2034
+GLYPH_B=("████ " "█   █" "████ " "█   █" "████ ")
+# shellcheck disable=SC2034
+GLYPH_A=(" ███ " "█   █" "█████" "█   █" "█   █")
+# shellcheck disable=SC2034
+GLYPH_H=("█   █" "█   █" "█████" "█   █" "█   █")
 LETTERS=(E S C B A S H)
-LABELS=("server" "repo" "ctrl" "redis" "appset" "dex" "notif")
+LABELS=("srvr" "repo" "ctrl" "redis" "apset" "dex" "notif")
+COLS="${ARGOCD_COLS:-$(tput cols 2>/dev/null || echo 80)}"
+[[ "$COLS" -ge 48 ]] || TTY=0   # too narrow to redraw safely: plain lines instead
 
-# glyph_row LETTER ROW STATE -> one 8-column slice, coloured by STATE (0 missing, 1 starting, 2 healthy)
+# glyph_row LETTER ROW STATE -> one 5-column slice (0 missing, 1 starting, 2 healthy)
 glyph_row() {
   local -n g="GLYPH_$1"
-  local row="${g[$2]}" state="$3"
-  case "$state" in
+  local row="${g[$2]}"
+  case "$3" in
     2) printf '%s%s%s' "$C_OK" "$row" "$C_OFF" ;;
     1) printf '%s%s%s' "$C_WARN" "${row//█/░}" "$C_OFF" ;;
     *) printf '%s%s%s' "$C_DIM" "${row//█/░}" "$C_OFF" ;;
   esac
 }
+
+# fit TEXT -> TEXT cut to the terminal width, so a line never wraps
+fit() { local t="$1"; printf '%s' "${t:0:$((COLS-2))}"; }
 
 # render_tree: draw the ESCBASH banner in place from the live cluster state.
 render_tree() {
@@ -161,29 +166,25 @@ render_tree() {
       if [[ "$d" == "1" ]]; then state[$widx]=2; total=$((total+1))
       elif [[ "$c" == "1" ]]; then state[$widx]=1; fi
     elif [[ "$t" == "P" && "$b" != "1" && -z "$busy" ]]; then
-      busy="${a} (${c})"
+      busy="${a%-*}"; busy="${busy%-*} (${c})"   # pod name without the hash suffixes
     fi
   done <<<"$rows"
 
   local r i
-  for r in 0 1 2 3 4 5; do
+  for r in 0 1 2 3 4; do
     line="  "
-    for i in 0 1 2 3 4 5 6; do
-      line+="$(glyph_row "${LETTERS[$i]}" "$r" "${state[$i]}") "
-    done
+    for i in 0 1 2 3 4 5 6; do line+="$(glyph_row "${LETTERS[$i]}" "$r" "${state[$i]}") "; done
     lines+=("$line")
   done
   line="  "
-  for i in 0 1 2 3 4 5 6; do line+="$(printf '%-9s' "${LABELS[$i]}")"; done
+  for i in 0 1 2 3 4 5 6; do line+="$(printf '%-6s' "${LABELS[$i]}")"; done
   lines+=("${C_DIM}${line}${C_OFF}")
   lines+=("")
-  if [[ -n "$busy" ]]; then
-    lines+=("  ${total} of ${#WORKLOADS[@]} healthy . $(elapsed) . starting ${busy}")
-  else
-    lines+=("  ${total} of ${#WORKLOADS[@]} healthy . $(elapsed)")
-  fi
+  local pct=$(( total * 100 / ${#WORKLOADS[@]} ))
+  lines+=("$(fit "  ${total}/${#WORKLOADS[@]} components healthy . ${pct}% . $(elapsed)")")
+  if [[ -n "$busy" ]]; then lines+=("$(fit "  starting: ${busy}")"); else lines+=("$(fit "  waiting for the cluster")"); fi
   local note_idx=$(( ( $(date +%s) - START_TS ) / 8 % ${#NOTES[@]} ))
-  lines+=("  ${C_DIM}while you wait: ${NOTES[$note_idx]}${C_OFF}")
+  lines+=("${C_DIM}$(fit "  ${NOTES[$note_idx]}")${C_OFF}")
 
   if [[ "$TTY" == "1" && "$TREE_LINES" -gt 0 ]]; then
     printf '\e[%dA' "$TREE_LINES"
@@ -259,8 +260,15 @@ info "installing Argo CD ${ARGOCD_VERSION}. Each letter is one Argo CD component
 printf '\n'
 READY_COUNT=0
 DEADLINE=$(( $(date +%s) + 600 ))
+LAST_PLAIN=-1
 while :; do
-  render_tree
+  if [[ "$TTY" == "1" ]]; then
+    render_tree
+  else
+    render_tree >/tmp/argocd-banner.$$ 2>&1
+    if (( READY_COUNT != LAST_PLAIN )); then cat /tmp/argocd-banner.$$; LAST_PLAIN=$READY_COUNT; fi
+    rm -f /tmp/argocd-banner.$$
+  fi
   (( READY_COUNT >= ${#WORKLOADS[@]} )) && break
   if (( $(date +%s) > DEADLINE )); then
     printf '\n'
@@ -394,7 +402,8 @@ fi
 ok "fork registered with Argo CD"
 
 # ---------------------------------------------------------------- summary
-printf '\n%sEvery letter above is one Argo CD component, and all seven are healthy.%s\n' "$C_DIM" "$C_OFF"
-printf 'Open the Browser tab at %s%s:8080%s for the UI (user admin, password from: argocd admin initial-password -n argocd).\n' "$C_OK" "$(hostname)" "$C_OFF"
+printf '\n%sEvery letter above is one Argo CD component. All seven are healthy.%s\n' "$C_DIM" "$C_OFF"
+printf 'UI:      Browser tab at %s%s:8080%s\n' "$C_OK" "$(hostname)" "$C_OFF"
+printf 'Login:   admin, password from:  argocd admin initial-password -n argocd\n'
 printf 'Branch:  %s\nClone:   %s\nLog:     %s\n\n' "$TOPIC_BRANCH" "$CLONE_DIR" "$LOG"
 printf '%sReady. Press Submit.%s\n' "$C_OK" "$C_OFF"
