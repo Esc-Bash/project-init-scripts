@@ -121,12 +121,17 @@ tree_rows() {
 # Block letters, one per workload, in the order of WORKLOADS: E S C B A S H.
 # A letter is dim and hollow until its object exists, yellow and hollow while
 # it starts, green and solid once the workload is healthy.
-# shellcheck disable=SC2034  # the GLYPH_* arrays are read through a nameref in glyph_row
+# shellcheck disable=SC2034  # read through a nameref in glyph_row
 GLYPH_E=("███████╗" "██╔════╝" "█████╗  " "██╔══╝  " "███████╗" "╚══════╝")
+# shellcheck disable=SC2034  # read through a nameref in glyph_row
 GLYPH_S=("███████╗" "██╔════╝" "███████╗" "╚════██║" "███████║" "╚══════╝")
+# shellcheck disable=SC2034  # read through a nameref in glyph_row
 GLYPH_C=(" ██████╗" "██╔════╝" "██║     " "██║     " "╚██████╗" " ╚═════╝")
+# shellcheck disable=SC2034  # read through a nameref in glyph_row
 GLYPH_B=("██████╗ " "██╔══██╗" "██████╔╝" "██╔══██╗" "██████╔╝" "╚═════╝ ")
+# shellcheck disable=SC2034  # read through a nameref in glyph_row
 GLYPH_A=(" █████╗ " "██╔══██╗" "███████║" "██╔══██║" "██║  ██║" "╚═╝  ╚═╝")
+# shellcheck disable=SC2034  # read through a nameref in glyph_row
 GLYPH_H=("██╗  ██╗" "██║  ██║" "███████║" "██╔══██║" "██║  ██║" "╚═╝  ╚═╝")
 LETTERS=(E S C B A S H)
 LABELS=("server" "repo" "ctrl" "redis" "appset" "dex" "notif")
