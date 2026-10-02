@@ -8,7 +8,7 @@
 # The wrapper exports TOPIC_BRANCH and pipes this file to bash. What it does:
 #   1. saves the GitHub token to /root/.github/token and checks it
 #   2. waits for the kind node
-#   3. installs Argo CD v3.5.3 and shows the resource tree growing
+#   3. installs Argo CD v3.5.3 and lights up ESCBASH letter by letter as pods come up
 #   4. installs the argocd command line tool
 #   5. exposes the server on a NodePort for the CLI and starts the port-forward
 #      on 8080 for the lab browser as a background service (unit argocd-ui)
@@ -118,48 +118,67 @@ tree_rows() {
   done
 }
 
-# render_tree: draw the tree in place. Reads the cluster once per call.
+# Block letters, one per workload, in the order of WORKLOADS: E S C B A S H.
+# A letter is dim and hollow until its object exists, yellow and hollow while
+# it starts, green and solid once the workload is healthy.
+# shellcheck disable=SC2034  # the GLYPH_* arrays are read through a nameref in glyph_row
+GLYPH_E=("███████╗" "██╔════╝" "█████╗  " "██╔══╝  " "███████╗" "╚══════╝")
+GLYPH_S=("███████╗" "██╔════╝" "███████╗" "╚════██║" "███████║" "╚══════╝")
+GLYPH_C=(" ██████╗" "██╔════╝" "██║     " "██║     " "╚██████╗" " ╚═════╝")
+GLYPH_B=("██████╗ " "██╔══██╗" "██████╔╝" "██╔══██╗" "██████╔╝" "╚═════╝ ")
+GLYPH_A=(" █████╗ " "██╔══██╗" "███████║" "██╔══██║" "██║  ██║" "╚═╝  ╚═╝")
+GLYPH_H=("██╗  ██╗" "██║  ██║" "███████║" "██╔══██║" "██║  ██║" "╚═╝  ╚═╝")
+LETTERS=(E S C B A S H)
+LABELS=("server" "repo" "ctrl" "redis" "appset" "dex" "notif")
+
+# glyph_row LETTER ROW STATE -> one 8-column slice, coloured by STATE (0 missing, 1 starting, 2 healthy)
+glyph_row() {
+  local -n g="GLYPH_$1"
+  local row="${g[$2]}" state="$3"
+  case "$state" in
+    2) printf '%s%s%s' "$C_OK" "$row" "$C_OFF" ;;
+    1) printf '%s%s%s' "$C_WARN" "${row//█/░}" "$C_OFF" ;;
+    *) printf '%s%s%s' "$C_DIM" "${row//█/░}" "$C_OFF" ;;
+  esac
+}
+
+# render_tree: draw the ESCBASH banner in place from the live cluster state.
 render_tree() {
-  local json rows line kind name exists ready podname pready pstatus
-  local total=0 lines=() i last_w=0
+  local json rows line t a b c d
+  local -a state=(0 0 0 0 0 0 0) lines=()
+  local total=0 widx=-1 busy=""
   json="$(cluster_json)"
   rows="$(tree_rows "$json")"
 
-  # find the last workload row so the branch glyph is └ for it
-  i=0
-  while IFS=$'\t' read -r t _; do
-    [[ "$t" == "W" ]] && last_w=$i
-    i=$((i+1))
-  done <<<"$rows"
-
-  lines+=("argocd (namespace)")
-  i=0
   while IFS=$'\t' read -r t a b c d; do
     if [[ "$t" == "W" ]]; then
-      kind="$a"; name="$b"; exists="$c"; ready="$d"
-      local glyph="├─" sync=" " health=" "
-      (( i == last_w )) && glyph="└─"
-      [[ "$exists" == "1" ]] && sync="${C_OK}✔${C_OFF}"
-      if [[ "$ready" == "1" ]]; then health="${C_OK}♥${C_OFF}"; total=$((total+1))
-      elif [[ "$exists" == "1" ]]; then health="${C_WARN}○${C_OFF}"; fi
-      if [[ "$exists" == "1" ]]; then
-        lines+=("$(printf '%s %s%s %s %s' "$glyph" "$sync" "$health" "$kind" "$name")")
-      else
-        lines+=("$(printf '%s    %s %s %s(not created yet)%s' "$glyph" "$kind" "$name" "$C_DIM" "$C_OFF")")
-      fi
-      PIPE="│  "; (( i == last_w )) && PIPE="   "
-    else
-      podname="$a"; pready="$b"; pstatus="$c"
-      local ph="${C_WARN}○${C_OFF}"
-      [[ "$pready" == "1" ]] && ph="${C_OK}♥${C_OFF}"
-      lines+=("$(printf '%s └─ %s Pod %-44s %s' "$PIPE" "$ph" "$podname" "$pstatus")")
+      widx=$((widx+1))
+      if [[ "$d" == "1" ]]; then state[$widx]=2; total=$((total+1))
+      elif [[ "$c" == "1" ]]; then state[$widx]=1; fi
+    elif [[ "$t" == "P" && "$b" != "1" && -z "$busy" ]]; then
+      busy="${a} (${c})"
     fi
-    i=$((i+1))
   done <<<"$rows"
 
+  local r i
+  for r in 0 1 2 3 4 5; do
+    line="  "
+    for i in 0 1 2 3 4 5 6; do
+      line+="$(glyph_row "${LETTERS[$i]}" "$r" "${state[$i]}") "
+    done
+    lines+=("$line")
+  done
+  line="  "
+  for i in 0 1 2 3 4 5 6; do line+="$(printf '%-9s' "${LABELS[$i]}")"; done
+  lines+=("${C_DIM}${line}${C_OFF}")
+  lines+=("")
+  if [[ -n "$busy" ]]; then
+    lines+=("  ${total} of ${#WORKLOADS[@]} healthy . $(elapsed) . starting ${busy}")
+  else
+    lines+=("  ${total} of ${#WORKLOADS[@]} healthy . $(elapsed)")
+  fi
   local note_idx=$(( ( $(date +%s) - START_TS ) / 8 % ${#NOTES[@]} ))
-  lines+=("${C_OK}♥${C_OFF} healthy  ${C_WARN}○${C_OFF} progressing  ${C_OK}✔${C_OFF} synced        ${total} of ${#WORKLOADS[@]} ready, $(elapsed)")
-  lines+=("${C_DIM}while you wait: ${NOTES[$note_idx]}${C_OFF}")
+  lines+=("  ${C_DIM}while you wait: ${NOTES[$note_idx]}${C_OFF}")
 
   if [[ "$TTY" == "1" && "$TREE_LINES" -gt 0 ]]; then
     printf '\e[%dA' "$TREE_LINES"
@@ -231,7 +250,7 @@ if [[ "$DRY_RUN" != "1" ]]; then
     run kubectl -n argocd rollout restart deploy argocd-server
   fi
 fi
-info "installing Argo CD ${ARGOCD_VERSION}, watching the resource tree grow"
+info "installing Argo CD ${ARGOCD_VERSION}. Each letter is one Argo CD component, it lights up when that component is healthy"
 printf '\n'
 READY_COUNT=0
 DEADLINE=$(( $(date +%s) + 600 ))
@@ -370,7 +389,7 @@ fi
 ok "fork registered with Argo CD"
 
 # ---------------------------------------------------------------- summary
-printf '\n%sThis is the tree the Argo CD UI draws for every Application.%s\n' "$C_DIM" "$C_OFF"
-printf 'Open the Browser tab at %s%s:8080%s to see it (user admin, password from: argocd admin initial-password -n argocd).\n' "$C_OK" "$(hostname)" "$C_OFF"
+printf '\n%sEvery letter above is one Argo CD component, and all seven are healthy.%s\n' "$C_DIM" "$C_OFF"
+printf 'Open the Browser tab at %s%s:8080%s for the UI (user admin, password from: argocd admin initial-password -n argocd).\n' "$C_OK" "$(hostname)" "$C_OFF"
 printf 'Branch:  %s\nClone:   %s\nLog:     %s\n\n' "$TOPIC_BRANCH" "$CLONE_DIR" "$LOG"
 printf '%sReady. Press Submit.%s\n' "$C_OK" "$C_OFF"
