@@ -340,7 +340,9 @@ if [[ "$DRY_RUN" != "1" ]]; then
   LOGGED_IN=0
   ADMIN_PW=""
   for _ in $(seq 1 20); do
-    ADMIN_PW="$(argocd admin initial-password -n argocd 2>>"$LOG" | head -1 | tr -d '\r')"
+    # sed reads to the end: with pipefail, head -1 closing the pipe early kills
+    # argocd with SIGPIPE now and then, and a not-yet-ready secret must retry, not abort
+    ADMIN_PW="$({ argocd admin initial-password -n argocd 2>>"$LOG" || true; } | sed -n '1p' | tr -d '\r')"
     [[ -n "$ADMIN_PW" ]] && break
     sleep 3
   done
