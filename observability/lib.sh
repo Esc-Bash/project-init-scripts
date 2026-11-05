@@ -17,6 +17,10 @@
 #   4. runs stages/prep-<OBS_TOPIC>.sh if it exists (extra setup for this topic only,
 #      for example a fault the learner has to find)
 #   5. restarts every port-forward unit a stage started that is not running
+# Disk: the kind-single lab machine has an 8 GB disk, and the images of the later topics need most
+# of what is free. So this script keeps one copy of every image: it deletes the kindest/node tar
+# (the cluster is already created), each image it builds once kind has it, the build cache, and
+# old untagged images inside the kind node (free_disk, after every stage).
 # Safe to run again: a stage that finished is not run again (markers in /root/.observability-init/),
 # and every helper checks before it acts. Output goes to the screen as short status lines;
 # every command's output goes to /root/observability-init.log.
@@ -38,8 +42,10 @@
 #   wait_rollout ns deploy...         wait until each Deployment has rolled out (OBS_ROLLOUT_TIMEOUT, 300s)
 #   start_pf unit ns svc port [addr]  port-forward svc/<svc> as transient unit <unit> (addr 0.0.0.0)
 #   wait_http url [tries]             wait until url answers with a 2xx/3xx status
-#   build_image tag dir               docker build -t tag dir and kind load the image
-#                                     (dir relative to $SHOP_DIR, or absolute)
+#   build_image tag dir               docker build -t tag dir and kind load the image, then delete
+#                                     the docker copy and the build cache (dir relative to
+#                                     $SHOP_DIR, or absolute)
+#   free_disk                         delete images and build cache nothing needs any more
 #   use_topic_files NN svc               copy $OBS_FILES/topic-NN/<svc>/ into app/<svc>/ (once per machine)
 #   deploy_topic_files NN svc            use_topic_files + build shop-<svc>:dev from $OBS_FILES/topic-NN/<svc>,
 #                                     set it on deploy/<svc> in namespace shop, restart, wait
@@ -85,6 +91,12 @@ main() {
     sleep 5
   done
   (( ready == 1 )) || die "the kind cluster is not ready. Check: kubectl get nodes"
+  # The kindest/node tar is only for creating a cluster, and docker already has that image
+  # (the kind node runs from it). It is almost 1 GB of the 8 GB disk.
+  if [[ -f /opt/kind-node.tar ]] && [[ -n "$(docker images -q 'kindest/node' 2>/dev/null)" ]]; then
+    log "rm /opt/kind-node.tar (kindest/node is in docker already)"
+    rm -f /opt/kind-node.tar
+  fi
   ok "cluster node ready"
 
   # 2. repository -------------------------------------------------------------
@@ -120,6 +132,7 @@ main() {
       die "could not unpack ${img}"
     fi
     run docker rm "$cid"
+    run docker image rm "$img" || true
     chmod -R go-rwx "$SETUP_DIR"
     touch "$STATE_DIR/setup-${OBS_TOPIC}.done"
   fi
@@ -200,6 +213,7 @@ run_stage() {
   # shellcheck disable=SC1090
   source "$f"
   cd "$SHOP_DIR"
+  free_disk
 }
 
 # ---------------------------------------------------------------- helpers for stages
@@ -252,6 +266,26 @@ build_image() {
   [[ "$dir" == /* ]] || dir="$SHOP_DIR/$dir"
   run docker build -t "$tag" "$dir" || die "docker build of ${tag} from ${dir} failed"
   run kind load docker-image "$tag" || die "kind load of ${tag} failed"
+  # kind has its own copy now; keep only that one
+  run docker image rm "$tag" || true
+  run docker builder prune -af || true
+}
+
+# free_disk: delete what no step needs any more. Never fails the setup.
+#   - dangling docker images and the build cache
+#   - untagged images inside the kind node: an image loses its tag when a newer build with the same
+#     tag (shop-orders:dev) is loaded. No pod spec can name an untagged image, so it is never needed.
+free_disk() {
+  run docker image prune -f || true
+  run docker builder prune -af || true
+  local node ids
+  for node in $(kind get nodes 2>/dev/null); do
+    ids="$(docker exec "$node" crictl images -o json 2>/dev/null \
+      | jq -r '.images[] | select((.repoTags // []) | length == 0) | .id' 2>/dev/null || true)"
+    [[ -n "$ids" ]] || continue
+    # shellcheck disable=SC2086
+    run docker exec "$node" crictl rmi $ids || true
+  done
 }
 
 use_topic_files() {
